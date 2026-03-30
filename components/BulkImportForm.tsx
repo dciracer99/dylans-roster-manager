@@ -3,20 +3,35 @@
 import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase";
 
+interface ParsedMessage {
+  direction: "sent" | "received";
+  content: string;
+}
+
 interface Props {
   contactId?: string;
+  contactName?: string;
   onComplete: () => void;
 }
 
-export default function BulkImportForm({ contactId, onComplete }: Props) {
+export default function BulkImportForm({
+  contactId,
+  contactName: propContactName,
+  onComplete,
+}: Props) {
   const supabase = createClient();
   const [contacts, setContacts] = useState<{ id: string; name: string }[]>([]);
   const [selectedContact, setSelectedContact] = useState(contactId || "");
   const [rawText, setRawText] = useState("");
-  const [platform, setPlatform] = useState("");
-  const [format, setFormat] = useState<"auto" | "manual">("auto");
+  const [platform, setPlatform] = useState("iMessage");
+  const [userName, setUserName] = useState("");
+  const [mode, setMode] = useState<"smart" | "labeled" | "alternating">(
+    "smart"
+  );
   const [saving, setSaving] = useState(false);
+  const [parsing, setParsing] = useState(false);
   const [result, setResult] = useState<string | null>(null);
+  const [preview, setPreview] = useState<ParsedMessage[] | null>(null);
 
   useEffect(() => {
     async function loadContacts() {
@@ -34,23 +49,25 @@ export default function BulkImportForm({ contactId, onComplete }: Props) {
     if (!contactId) loadContacts();
   }, []);
 
-  function parseMessages(text: string): { direction: "sent" | "received"; content: string }[] {
+  const resolvedContactName =
+    propContactName ||
+    contacts.find((c) => c.id === selectedContact)?.name ||
+    "";
+
+  function parseLabeled(text: string): ParsedMessage[] {
     const lines = text.split("\n").filter((l) => l.trim());
-    const messages: { direction: "sent" | "received"; content: string }[] = [];
+    const messages: ParsedMessage[] = [];
 
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed) continue;
 
-      // Format: "me: message" or "them: message"
-      const meMatch = trimmed.match(/^(me|i|sent|you|>>?)\s*[:>-]\s*(.+)/i);
-      const themMatch = trimmed.match(/^(them|they|received|<<?\s*)\s*[:>-]\s*(.+)/i);
-
-      // Format: "> message" (sent) or "< message" (received)
+      const meMatch = trimmed.match(/^(me|i|sent|you|>>?)\s*[:>\-]\s*(.+)/i);
+      const themMatch = trimmed.match(
+        /^(them|they|received|<<?\s*)\s*[:>\-]\s*(.+)/i
+      );
       const arrowSent = trimmed.match(/^>\s*(.+)/);
       const arrowRecv = trimmed.match(/^<\s*(.+)/);
-
-      // Format: "→ message" or "← message"
       const unicodeSent = trimmed.match(/^[→➡]\s*(.+)/);
       const unicodeRecv = trimmed.match(/^[←⬅]\s*(.+)/);
 
@@ -65,15 +82,62 @@ export default function BulkImportForm({ contactId, onComplete }: Props) {
       } else if (unicodeSent) {
         messages.push({ direction: "sent", content: unicodeSent[1].trim() });
       } else if (unicodeRecv) {
-        messages.push({ direction: "received", content: unicodeRecv[1].trim() });
-      } else {
-        // No prefix — skip or treat as unknown
-        // Try to detect iPhone copy-paste format: "Name\nMessage\nTimestamp"
-        // For now, skip lines without a clear direction prefix
+        messages.push({
+          direction: "received",
+          content: unicodeRecv[1].trim(),
+        });
       }
     }
 
     return messages;
+  }
+
+  async function handleSmartParse() {
+    if (!rawText.trim()) {
+      setResult("Paste some messages first.");
+      return;
+    }
+    if (!userName.trim()) {
+      setResult("Enter your name as it appears in the conversation.");
+      return;
+    }
+    if (!resolvedContactName) {
+      setResult("Select a contact first.");
+      return;
+    }
+
+    setParsing(true);
+    setResult(null);
+    setPreview(null);
+
+    try {
+      const res = await fetch("/api/parse-conversation", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          rawText: rawText.slice(0, 10000), // Limit to ~10k chars to manage tokens
+          userName: userName.trim(),
+          contactName: resolvedContactName,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (data.error) {
+        setResult(`Error: ${data.error}`);
+      } else if (data.messages && data.messages.length > 0) {
+        setPreview(data.messages);
+        setResult(
+          `Parsed ${data.messages.length} messages. Review below and click Import.`
+        );
+      } else {
+        setResult("No messages could be parsed. Try a different format.");
+      }
+    } catch {
+      setResult("Failed to parse. Check your connection.");
+    }
+
+    setParsing(false);
   }
 
   async function handleImport() {
@@ -82,32 +146,24 @@ export default function BulkImportForm({ contactId, onComplete }: Props) {
       setResult("Select a contact first.");
       return;
     }
-    if (!rawText.trim()) {
-      setResult("Paste some messages first.");
-      return;
-    }
 
-    setSaving(true);
-    setResult(null);
+    let messages: ParsedMessage[];
 
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    if (!user) return;
-
-    let messages: { direction: "sent" | "received"; content: string }[];
-
-    if (format === "auto") {
-      messages = parseMessages(rawText);
+    if (mode === "smart") {
+      if (!preview || preview.length === 0) {
+        setResult('Click "Parse with AI" first.');
+        return;
+      }
+      messages = preview;
+    } else if (mode === "labeled") {
+      messages = parseLabeled(rawText);
       if (messages.length === 0) {
         setResult(
-          "Couldn't parse any messages. Use the format:\nme: your message\nthem: their message"
+          "Couldn't parse any messages. Use: me: message / them: message"
         );
-        setSaving(false);
         return;
       }
     } else {
-      // Manual: each line alternates sent/received
       const lines = rawText
         .split("\n")
         .filter((l) => l.trim())
@@ -118,7 +174,19 @@ export default function BulkImportForm({ contactId, onComplete }: Props) {
       }));
     }
 
-    // Insert all at once, with timestamps spaced 1 minute apart for ordering
+    setSaving(true);
+    setResult(null);
+
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) {
+      setResult("Not authenticated.");
+      setSaving(false);
+      return;
+    }
+
+    // Space timestamps 1 min apart for chronological ordering
     const now = new Date();
     const inserts = messages.map((msg, idx) => ({
       user_id: user.id,
@@ -136,10 +204,8 @@ export default function BulkImportForm({ contactId, onComplete }: Props) {
     if (error) {
       setResult(`Error: ${error.message}`);
     } else {
-      setResult(`Imported ${messages.length} messages.`);
-      setTimeout(() => {
-        onComplete();
-      }, 1000);
+      setResult(`Imported ${messages.length} messages!`);
+      setTimeout(() => onComplete(), 1000);
     }
     setSaving(false);
   }
@@ -147,24 +213,70 @@ export default function BulkImportForm({ contactId, onComplete }: Props) {
   return (
     <div className="space-y-4">
       <h3 className="text-lg font-semibold text-rm-text">Bulk Import</h3>
-      <p className="text-rm-muted text-xs">
-        Paste a conversation. Use these formats:
-      </p>
 
-      <div className="bg-rm-bg border border-rm-border rounded-lg p-3 text-xs text-rm-muted font-mono space-y-1">
-        <div>me: hey what are you up to</div>
-        <div>them: nm just chilling hbu</div>
-        <div>me: about to grab food wanna come</div>
-        <div>them: bet where at</div>
+      {/* Mode selector */}
+      <div className="flex gap-1.5">
+        {(["smart", "labeled", "alternating"] as const).map((m) => (
+          <button
+            key={m}
+            onClick={() => {
+              setMode(m);
+              setPreview(null);
+              setResult(null);
+            }}
+            className={`flex-1 py-2 rounded-lg text-xs font-medium min-h-[44px] ${
+              mode === m
+                ? "bg-rm-accent text-white"
+                : "bg-rm-bg border border-rm-border text-rm-muted"
+            }`}
+          >
+            {m === "smart"
+              ? "🤖 Smart Parse"
+              : m === "labeled"
+              ? "me/them"
+              : "Alternating"}
+          </button>
+        ))}
       </div>
 
-      <p className="text-rm-muted text-xs">
-        Also works with: <code className="text-rm-accent">&gt; sent</code>{" "}
-        <code className="text-rm-accent">&lt; received</code> or{" "}
-        <code className="text-rm-accent">→ sent</code>{" "}
-        <code className="text-rm-accent">← received</code>
-      </p>
+      {/* Smart parse instructions */}
+      {mode === "smart" && (
+        <div className="space-y-3">
+          <p className="text-rm-muted text-xs">
+            Paste your conversation exactly as copied. AI will figure out who
+            said what. Works with iMessage, Instagram, WhatsApp, or any format.
+          </p>
 
+          <div>
+            <label className="block text-xs text-rm-muted mb-1">
+              Your name (as it appears in the conversation)
+            </label>
+            <input
+              type="text"
+              value={userName}
+              onChange={(e) => setUserName(e.target.value)}
+              className="w-full bg-rm-bg border border-rm-border rounded-lg px-3 py-2.5 text-rm-text text-sm min-h-[44px]"
+              placeholder="e.g. Dylan, Dylan Iskander, Me"
+            />
+          </div>
+        </div>
+      )}
+
+      {mode === "labeled" && (
+        <div className="bg-rm-bg border border-rm-border rounded-lg p-3 text-xs text-rm-muted font-mono space-y-1">
+          <div>me: hey what are you up to</div>
+          <div>them: nm just chilling hbu</div>
+          <div>me: about to grab food wanna come</div>
+        </div>
+      )}
+
+      {mode === "alternating" && (
+        <p className="text-rm-muted text-xs">
+          Each line alternates: line 1 = them, line 2 = you, line 3 = them...
+        </p>
+      )}
+
+      {/* Contact selector */}
       {!contactId && (
         <select
           value={selectedContact}
@@ -180,35 +292,7 @@ export default function BulkImportForm({ contactId, onComplete }: Props) {
         </select>
       )}
 
-      <div className="flex gap-2">
-        <button
-          onClick={() => setFormat("auto")}
-          className={`flex-1 py-2 rounded-lg text-sm font-medium min-h-[44px] ${
-            format === "auto"
-              ? "bg-rm-accent text-white"
-              : "bg-rm-bg border border-rm-border text-rm-muted"
-          }`}
-        >
-          Labeled (me/them)
-        </button>
-        <button
-          onClick={() => setFormat("manual")}
-          className={`flex-1 py-2 rounded-lg text-sm font-medium min-h-[44px] ${
-            format === "manual"
-              ? "bg-rm-accent text-white"
-              : "bg-rm-bg border border-rm-border text-rm-muted"
-          }`}
-        >
-          Alternating
-        </button>
-      </div>
-
-      {format === "manual" && (
-        <p className="text-rm-muted text-xs">
-          Each line alternates: line 1 = them, line 2 = you, line 3 = them...
-        </p>
-      )}
-
+      {/* Platform */}
       <input
         type="text"
         value={platform}
@@ -217,23 +301,58 @@ export default function BulkImportForm({ contactId, onComplete }: Props) {
         placeholder="Platform (iMessage, Instagram, etc.)"
       />
 
+      {/* Text area */}
       <textarea
         value={rawText}
         onChange={(e) => setRawText(e.target.value)}
         rows={10}
         className="w-full bg-rm-bg border border-rm-border rounded-lg px-3 py-2.5 text-rm-text text-sm resize-none font-mono"
         placeholder={
-          format === "auto"
+          mode === "smart"
+            ? "Paste your conversation here... any format works.\n\nExamples:\n\nDylan: hey whats up\nSarah: nm wanna hang\nDylan: bet where at\n\nOr iPhone copy/paste format:\n\nSarah Johnson\nhey are you coming tonight\n\nDylan\nyeah im down"
+            : mode === "labeled"
             ? "me: hey whats up\nthem: not much hbu\nme: tryna go out tonight?"
             : "not much hbu\ntryna go out tonight\nbet where"
         }
       />
 
+      <div className="text-rm-muted text-xs">
+        {rawText.split("\n").filter((l) => l.trim()).length} lines pasted
+        {rawText.length > 0 && ` · ${rawText.length.toLocaleString()} chars`}
+      </div>
+
+      {/* Preview */}
+      {preview && preview.length > 0 && (
+        <div className="max-h-48 overflow-y-auto space-y-1 border border-rm-border rounded-lg p-3">
+          <div className="text-xs text-rm-muted mb-2 font-medium">
+            Preview ({preview.length} messages)
+          </div>
+          {preview.map((msg, idx) => (
+            <div
+              key={idx}
+              className={`text-xs py-1 px-2 rounded ${
+                msg.direction === "sent"
+                  ? "bg-blue-500/10 text-blue-400"
+                  : "bg-rm-accent/10 text-rm-accent"
+              }`}
+            >
+              <span className="font-medium">
+                {msg.direction === "sent" ? "You" : "Them"}:
+              </span>{" "}
+              {msg.content}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Result */}
       {result && (
         <div
           className={`text-sm p-3 rounded-lg ${
-            result.startsWith("Error") || result.startsWith("Couldn")
+            result.startsWith("Error") || result.startsWith("Couldn") || result.startsWith("No ") || result.startsWith("Enter") || result.startsWith("Select") || result.startsWith("Click") || result.startsWith("Paste") || result.startsWith("Not ")
               ? "bg-red-500/10 text-red-400"
+              : result.startsWith("Parsed")
+              ? "bg-blue-500/10 text-blue-400"
               : "bg-green-500/10 text-green-400"
           }`}
         >
@@ -241,12 +360,27 @@ export default function BulkImportForm({ contactId, onComplete }: Props) {
         </div>
       )}
 
+      {/* Action buttons */}
+      {mode === "smart" && !preview && (
+        <button
+          onClick={handleSmartParse}
+          disabled={parsing || !rawText.trim()}
+          className="w-full py-3 bg-rm-card border border-rm-accent text-rm-accent rounded-lg font-semibold text-sm min-h-[44px] disabled:opacity-50"
+        >
+          {parsing ? "Parsing with AI..." : "Parse with AI"}
+        </button>
+      )}
+
       <button
         onClick={handleImport}
-        disabled={saving}
+        disabled={saving || (mode === "smart" && !preview)}
         className="w-full py-3 bg-rm-accent text-white rounded-lg font-semibold text-sm min-h-[44px] disabled:opacity-50"
       >
-        {saving ? "Importing..." : "Import Messages"}
+        {saving
+          ? "Importing..."
+          : `Import ${
+              preview ? preview.length + " " : ""
+            }Messages`}
       </button>
     </div>
   );

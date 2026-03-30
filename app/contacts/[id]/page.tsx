@@ -591,6 +591,7 @@ export default function ThreadView() {
       <BottomSheet open={showBulk} onClose={() => setShowBulk(false)}>
         <BulkImportForm
           contactId={contactId}
+          contactName={contact?.name}
           onComplete={() => {
             setShowBulk(false);
             window.location.reload();
