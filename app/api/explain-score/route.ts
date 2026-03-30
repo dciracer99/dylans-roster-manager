@@ -1,8 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
+import { checkRateLimit } from "@/lib/rate-limit";
 
 export async function POST(request: NextRequest) {
   try {
+    const ip = request.headers.get("x-forwarded-for") || "unknown";
+    const { allowed } = checkRateLimit(ip);
+    if (!allowed) {
+      return NextResponse.json(
+        { explanation: "Too many requests. Wait a minute and try again." },
+        { status: 429 }
+      );
+    }
+
     const body = await request.json();
     const {
       contactName,
@@ -11,6 +21,7 @@ export async function POST(request: NextRequest) {
       daysSinceLastContact,
       lastDirection,
       recentInteractions,
+      voiceProfile,
     } = body;
 
     const client = new Anthropic({
@@ -29,7 +40,8 @@ Current Charisma Score: ${score}/100
 Days since last interaction: ${daysSinceLastContact}
 Last interaction direction: ${lastDirection || "none"}
 Recent interactions:
-${(recentInteractions || []).map((i: string, idx: number) => `${idx + 1}. ${i}`).join("\n")}`;
+${(recentInteractions || []).map((i: string, idx: number) => `${idx + 1}. ${i}`).join("\n")}
+${voiceProfile ? `\nUser context: ${voiceProfile}` : ""}`;
 
     const message = await client.messages.create({
       model: "claude-haiku-4-5-20251001",
@@ -45,7 +57,8 @@ ${(recentInteractions || []).map((i: string, idx: number) => `${idx + 1}. ${i}`)
     return NextResponse.json({ explanation });
   } catch (error: unknown) {
     console.error("Explain score error:", error);
-    const message = error instanceof Error ? error.message : "Failed to generate explanation";
+    const message =
+      error instanceof Error ? error.message : "Failed to generate explanation";
     return NextResponse.json({ explanation: message }, { status: 500 });
   }
 }
