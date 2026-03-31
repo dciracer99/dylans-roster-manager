@@ -28,6 +28,8 @@ export default function BulkImportForm({
   const [mode, setMode] = useState<"smart" | "labeled" | "alternating">(
     "smart"
   );
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
   const [saving, setSaving] = useState(false);
   const [parsing, setParsing] = useState(false);
   const [result, setResult] = useState<string | null>(null);
@@ -187,17 +189,22 @@ export default function BulkImportForm({
       return;
     }
 
-    // Space timestamps 1 min apart for chronological ordering
-    const now = new Date();
+    // Calculate timestamps: spread messages across the date range
+    const end = endDate ? new Date(endDate + "T23:59:00") : new Date();
+    const start = startDate
+      ? new Date(startDate + "T00:00:00")
+      : new Date(end.getTime() - messages.length * 60000);
+    const totalSpan = end.getTime() - start.getTime();
+    const interval =
+      messages.length > 1 ? totalSpan / (messages.length - 1) : 0;
+
     const inserts = messages.map((msg, idx) => ({
       user_id: user.id,
       contact_id: target,
       direction: msg.direction,
       content: msg.content,
       platform: platform || null,
-      logged_at: new Date(
-        now.getTime() - (messages.length - idx) * 60000
-      ).toISOString(),
+      logged_at: new Date(start.getTime() + idx * interval).toISOString(),
     }));
 
     const { error } = await supabase.from("interactions").insert(inserts);
@@ -301,6 +308,35 @@ export default function BulkImportForm({
         className="w-full bg-rm-bg border border-rm-border rounded-lg px-3 py-2.5 text-rm-text text-sm min-h-[44px]"
         placeholder="Platform (iMessage, Instagram, etc.)"
       />
+
+      {/* Date Range */}
+      <div className="flex gap-2">
+        <div className="flex-1">
+          <label className="block text-xs text-rm-muted mb-1">
+            First message date
+          </label>
+          <input
+            type="date"
+            value={startDate}
+            onChange={(e) => setStartDate(e.target.value)}
+            className="w-full bg-rm-bg border border-rm-border rounded-lg px-3 py-2.5 text-rm-text text-sm min-h-[44px]"
+          />
+        </div>
+        <div className="flex-1">
+          <label className="block text-xs text-rm-muted mb-1">
+            Last message date
+          </label>
+          <input
+            type="date"
+            value={endDate}
+            onChange={(e) => setEndDate(e.target.value)}
+            className="w-full bg-rm-bg border border-rm-border rounded-lg px-3 py-2.5 text-rm-text text-sm min-h-[44px]"
+          />
+        </div>
+      </div>
+      <p className="text-rm-muted text-[11px] -mt-2">
+        Messages will be spread evenly across this range. Leave blank for today.
+      </p>
 
       {/* Text area */}
       <textarea
