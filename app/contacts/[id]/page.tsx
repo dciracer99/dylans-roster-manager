@@ -58,6 +58,9 @@ export default function ThreadView() {
     vibe: string;
     analysis: string;
   } | null>(null);
+  const [showConsult, setShowConsult] = useState(false);
+  const [consultQuestion, setConsultQuestion] = useState("");
+  const [consultAnswer, setConsultAnswer] = useState("");
   const [aiLoading, setAiLoading] = useState(false);
   const [copied, setCopied] = useState(false);
   const [voiceProfile, setVoiceProfile] = useState<string | null>(null);
@@ -231,6 +234,54 @@ export default function ThreadView() {
         vibe: "Error",
         analysis: "Failed to analyze. Check your API key.",
       });
+    }
+    setAiLoading(false);
+  }
+
+  async function handleConsult() {
+    if (!contact || !consultQuestion.trim()) return;
+    setAiLoading(true);
+    setConsultAnswer("");
+
+    const score = calculateCharismaScore(interactions);
+    const daysSince = getDaysSinceLastInteraction(interactions);
+    const lastDir = getLastDirection(interactions);
+    const sentCount = interactions.filter((i) => i.direction === "sent").length;
+    const receivedCount = interactions.filter(
+      (i) => i.direction === "received"
+    ).length;
+    const recent = interactions.slice(0, 15).map((i) => ({
+      direction: i.direction,
+      content: i.content,
+    }));
+
+    try {
+      const res = await fetch("/api/consult", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          question: consultQuestion.trim(),
+          contactName: contact.name,
+          tier: contact.tier,
+          replyTone: contact.reply_tone,
+          notes: contact.notes,
+          score,
+          daysSince,
+          lastDirection: lastDir,
+          totalSent: sentCount,
+          totalReceived: receivedCount,
+          rating: contact.rating,
+          recentInteractions: recent.map(
+            (r) =>
+              `${r.direction === "sent" ? "You" : "Them"}: ${r.content}`
+          ),
+          voiceProfile,
+        }),
+      });
+      const data = await res.json();
+      setConsultAnswer(data.answer);
+    } catch {
+      setConsultAnswer("Failed to get advice. Check your connection.");
     }
     setAiLoading(false);
   }
@@ -410,8 +461,18 @@ export default function ThreadView() {
           </div>
           <div className="flex gap-2 mt-2">
             <button
+              onClick={() => {
+                setShowConsult(true);
+                setConsultQuestion("");
+                setConsultAnswer("");
+              }}
+              className="flex-1 py-2.5 bg-rm-bg border border-rm-accent text-rm-accent rounded-lg text-sm font-medium min-h-[44px]"
+            >
+              Consult
+            </button>
+            <button
               onClick={() => setShowBulk(true)}
-              className="flex-1 py-2 text-rm-accent text-xs font-medium min-h-[44px]"
+              className="flex-1 py-2 text-rm-muted text-xs font-medium min-h-[44px]"
             >
               Bulk Import
             </button>
@@ -597,6 +658,53 @@ export default function ThreadView() {
             window.location.reload();
           }}
         />
+      </BottomSheet>
+
+      {/* Consult Sheet */}
+      <BottomSheet open={showConsult} onClose={() => setShowConsult(false)}>
+        <h3 className="text-lg font-semibold text-rm-text mb-1">
+          Consult
+        </h3>
+        <p className="text-rm-muted text-xs mb-4">
+          Ask anything about {contact?.name}. I have their full history.
+        </p>
+
+        <textarea
+          value={consultQuestion}
+          onChange={(e) => setConsultQuestion(e.target.value)}
+          rows={3}
+          className="w-full bg-rm-bg border border-rm-border rounded-lg px-3 py-2.5 text-rm-text text-sm resize-none mb-3"
+          placeholder={`e.g. "Should I reach out? It's been a while"\n"Is she losing interest?"\n"What should I say to re-engage?"`}
+        />
+
+        {!consultAnswer && (
+          <button
+            onClick={handleConsult}
+            disabled={aiLoading || !consultQuestion.trim()}
+            className="w-full py-3 bg-rm-accent text-white rounded-lg font-semibold text-sm min-h-[44px] disabled:opacity-50 mb-3"
+          >
+            {aiLoading ? "Thinking..." : "Get Advice"}
+          </button>
+        )}
+
+        {consultAnswer && (
+          <div className="space-y-3">
+            <div className="bg-rm-bg border border-rm-border rounded-lg p-4">
+              <p className="text-rm-text text-sm leading-relaxed">
+                {consultAnswer}
+              </p>
+            </div>
+            <button
+              onClick={() => {
+                setConsultAnswer("");
+                setConsultQuestion("");
+              }}
+              className="w-full py-3 bg-rm-card border border-rm-border text-rm-text rounded-lg text-sm min-h-[44px]"
+            >
+              Ask Another Question
+            </button>
+          </div>
+        )}
       </BottomSheet>
 
       <BottomNav />
