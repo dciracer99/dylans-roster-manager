@@ -65,6 +65,9 @@ export default function ThreadView() {
   const [showConsult, setShowConsult] = useState(false);
   const [showAnalyze, setShowAnalyze] = useState(false);
   const [analyzeResult, setAnalyzeResult] = useState("");
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkDeleting, setBulkDeleting] = useState(false);
   const [editingInteraction, setEditingInteraction] = useState<string | null>(null);
   const [editDate, setEditDate] = useState("");
   const [editContent, setEditContent] = useState("");
@@ -384,6 +387,54 @@ export default function ThreadView() {
     setInteractions(interactions.filter((i) => i.id !== interactionId));
   }
 
+  function toggleSelectMode() {
+    setSelectMode((prev) => !prev);
+    setSelectedIds(new Set());
+  }
+
+  function toggleSelected(id: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  }
+
+  function selectAll() {
+    if (selectedIds.size === interactions.length) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(interactions.map((i) => i.id)));
+    }
+  }
+
+  async function handleBulkDelete() {
+    if (selectedIds.size === 0) return;
+    if (
+      !confirm(`Delete ${selectedIds.size} selected interaction${selectedIds.size > 1 ? "s" : ""}?`)
+    )
+      return;
+
+    setBulkDeleting(true);
+    const ids = Array.from(selectedIds);
+
+    const { error } = await supabase
+      .from("interactions")
+      .delete()
+      .in("id", ids);
+
+    if (!error) {
+      setInteractions(interactions.filter((i) => !selectedIds.has(i.id)));
+      setSelectedIds(new Set());
+      setSelectMode(false);
+    }
+    setBulkDeleting(false);
+  }
+
   function copyToClipboard() {
     navigator.clipboard.writeText(draft);
     setCopied(true);
@@ -663,6 +714,32 @@ export default function ThreadView() {
           </div>
         </div>
 
+        {/* Interaction Log Header */}
+        {interactions.length > 0 && (
+          <div className="flex items-center justify-between mb-2">
+            <button
+              onClick={toggleSelectMode}
+              className={`px-4 py-2 rounded-lg text-sm font-medium min-h-[44px] ${
+                selectMode
+                  ? "bg-rm-accent text-white"
+                  : "bg-rm-card border border-rm-border text-rm-muted"
+              }`}
+            >
+              {selectMode ? "Cancel" : "Select"}
+            </button>
+            {selectMode && (
+              <button
+                onClick={selectAll}
+                className="px-4 py-2 rounded-lg text-sm font-medium min-h-[44px] bg-rm-card border border-rm-border text-rm-muted"
+              >
+                {selectedIds.size === interactions.length
+                  ? "Deselect All"
+                  : "Select All"}
+              </button>
+            )}
+          </div>
+        )}
+
         {/* Interaction Log */}
         <div className="space-y-2">
           {interactions.map((interaction) => {
@@ -678,10 +755,44 @@ export default function ThreadView() {
             return (
               <div
                 key={interaction.id}
-                className="bg-rm-card border border-rm-border rounded-xl p-4"
+                className={`bg-rm-card border rounded-xl p-4 ${
+                  selectMode && selectedIds.has(interaction.id)
+                    ? "border-rm-accent"
+                    : "border-rm-border"
+                }`}
+                onClick={
+                  selectMode
+                    ? () => toggleSelected(interaction.id)
+                    : undefined
+                }
               >
                 <div className="flex items-center justify-between mb-1">
                   <div className="flex items-center gap-2">
+                    {selectMode && (
+                      <div
+                        className={`w-[36px] h-[36px] flex items-center justify-center rounded border-2 shrink-0 ${
+                          selectedIds.has(interaction.id)
+                            ? "bg-rm-accent border-rm-accent"
+                            : "border-rm-border bg-rm-bg"
+                        }`}
+                      >
+                        {selectedIds.has(interaction.id) && (
+                          <svg
+                            className="w-4 h-4 text-white"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth={3}
+                              d="M5 13l4 4L19 7"
+                            />
+                          </svg>
+                        )}
+                      </div>
+                    )}
                     <span
                       className={`text-xs font-medium ${
                         interaction.direction === "sent"
@@ -957,6 +1068,24 @@ export default function ThreadView() {
           </div>
         ) : null}
       </BottomSheet>
+
+      {/* Floating Bulk Delete Bar */}
+      {selectMode && selectedIds.size > 0 && (
+        <div className="fixed bottom-20 left-0 right-0 z-50 px-4">
+          <div className="max-w-lg mx-auto bg-rm-card border border-rm-border rounded-xl p-3 flex items-center justify-between shadow-lg shadow-black/40">
+            <span className="text-rm-text text-sm font-medium">
+              {selectedIds.size} selected
+            </span>
+            <button
+              onClick={handleBulkDelete}
+              disabled={bulkDeleting}
+              className="px-5 py-2.5 bg-red-500 text-white rounded-lg text-sm font-semibold min-h-[44px] disabled:opacity-50"
+            >
+              {bulkDeleting ? "Deleting..." : "Delete Selected"}
+            </button>
+          </div>
+        </div>
+      )}
 
       <BottomNav />
     </div>

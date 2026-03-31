@@ -6,6 +6,7 @@ import { createClient } from "@/lib/supabase";
 interface ParsedMessage {
   direction: "sent" | "received";
   content: string;
+  detectedDate?: Date | null;
 }
 
 interface Props {
@@ -28,8 +29,17 @@ export default function BulkImportForm({
   const [mode, setMode] = useState<"smart" | "labeled" | "alternating">(
     "smart"
   );
-  const [startDate, setStartDate] = useState("");
-  const [endDate, setEndDate] = useState("");
+  const [startDate, setStartDate] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 7);
+    d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+    return d.toISOString().slice(0, 16);
+  });
+  const [endDate, setEndDate] = useState(() => {
+    const d = new Date();
+    d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+    return d.toISOString().slice(0, 16);
+  });
   const [saving, setSaving] = useState(false);
   const [parsing, setParsing] = useState(false);
   const [result, setResult] = useState<string | null>(null);
@@ -55,6 +65,198 @@ export default function BulkImportForm({
     propContactName ||
     contacts.find((c) => c.id === selectedContact)?.name ||
     "";
+
+  function detectDateInText(text: string): Date | null {
+    // Try ISO format: 2024-12-15 15:45
+    const isoMatch = text.match(
+      /(\d{4}-\d{1,2}-\d{1,2})\s+(\d{1,2}:\d{2}(?::\d{2})?)/
+    );
+    if (isoMatch) {
+      const d = new Date(`${isoMatch[1]}T${isoMatch[2]}`);
+      if (!isNaN(d.getTime())) return d;
+    }
+
+    // "Jan 5, 2025 at 10:32 PM" or "Dec 15, 2024, 3:45 PM"
+    const longMonthMatch = text.match(
+      /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2}),?\s+(\d{4}),?\s*(?:at\s+)?(\d{1,2}:\d{2})\s*(AM|PM)\b/i
+    );
+    if (longMonthMatch) {
+      const [, mon, day, year, time, ampm] = longMonthMatch;
+      const d = new Date(`${mon} ${day}, ${year} ${time} ${ampm}`);
+      if (!isNaN(d.getTime())) return d;
+    }
+
+    // "January 5, 2025 at 10:32 PM" full month name
+    const fullMonthMatch = text.match(
+      /\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2}),?\s+(\d{4}),?\s*(?:at\s+)?(\d{1,2}:\d{2})\s*(AM|PM)\b/i
+    );
+    if (fullMonthMatch) {
+      const [, mon, day, year, time, ampm] = fullMonthMatch;
+      const d = new Date(`${mon} ${day}, ${year} ${time} ${ampm}`);
+      if (!isNaN(d.getTime())) return d;
+    }
+
+    // "Jan 5, 2025" without time
+    const dateOnlyLong = text.match(
+      /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2}),?\s+(\d{4})\b/i
+    );
+    if (dateOnlyLong) {
+      const [, mon, day, year] = dateOnlyLong;
+      const d = new Date(`${mon} ${day}, ${year}`);
+      if (!isNaN(d.getTime())) return d;
+    }
+
+    // "Saturday, January 5" (assume current or recent year)
+    const dayNameMonth = text.match(
+      /\b(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2})\b/i
+    );
+    if (dayNameMonth) {
+      const [, mon, day] = dayNameMonth;
+      const now = new Date();
+      let d = new Date(`${mon} ${day}, ${now.getFullYear()}`);
+      if (d.getTime() > now.getTime() + 86400000) {
+        d = new Date(`${mon} ${day}, ${now.getFullYear() - 1}`);
+      }
+      if (!isNaN(d.getTime())) return d;
+    }
+
+    // "1/5/25 10:32 PM" or "1/5/2025 10:32 PM"
+    const slashMatch = text.match(
+      /\b(\d{1,2})\/(\d{1,2})\/(\d{2,4})\s+(\d{1,2}:\d{2})\s*(AM|PM)\b/i
+    );
+    if (slashMatch) {
+      const [, month, day, yearStr, time, ampm] = slashMatch;
+      const year =
+        yearStr.length === 2 ? `20${yearStr}` : yearStr;
+      const d = new Date(`${month}/${day}/${year} ${time} ${ampm}`);
+      if (!isNaN(d.getTime())) return d;
+    }
+
+    // "1/5/25" or "1/5/2025" without time
+    const slashDateOnly = text.match(
+      /\b(\d{1,2})\/(\d{1,2})\/(\d{2,4})\b/
+    );
+    if (slashDateOnly) {
+      const [, month, day, yearStr] = slashDateOnly;
+      const year =
+        yearStr.length === 2 ? `20${yearStr}` : yearStr;
+      const d = new Date(`${month}/${day}/${year}`);
+      if (!isNaN(d.getTime())) return d;
+    }
+
+    // "Tuesday 10:30 AM" - day of week with time, find most recent such day
+    const dayTimeMatch = text.match(
+      /\b(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s+(\d{1,2}:\d{2})\s*(AM|PM)\b/i
+    );
+    if (dayTimeMatch) {
+      const [, dayName, time, ampm] = dayTimeMatch;
+      const dayMap: Record<string, number> = {
+        sunday: 0, monday: 1, tuesday: 2, wednesday: 3,
+        thursday: 4, friday: 5, saturday: 6,
+      };
+      const targetDay = dayMap[dayName.toLowerCase()];
+      if (targetDay !== undefined) {
+        const now = new Date();
+        const currentDay = now.getDay();
+        let diff = currentDay - targetDay;
+        if (diff < 0) diff += 7;
+        if (diff === 0) diff = 7;
+        const d = new Date(now);
+        d.setDate(d.getDate() - diff);
+        const timeParts = time.split(":");
+        let hours = parseInt(timeParts[0], 10);
+        const minutes = parseInt(timeParts[1], 10);
+        if (ampm.toUpperCase() === "PM" && hours !== 12) hours += 12;
+        if (ampm.toUpperCase() === "AM" && hours === 12) hours = 0;
+        d.setHours(hours, minutes, 0, 0);
+        if (!isNaN(d.getTime())) return d;
+      }
+    }
+
+    // "Yesterday 3:45 PM"
+    const yesterdayMatch = text.match(
+      /\bYesterday\s+(\d{1,2}:\d{2})\s*(AM|PM)\b/i
+    );
+    if (yesterdayMatch) {
+      const [, time, ampm] = yesterdayMatch;
+      const d = new Date();
+      d.setDate(d.getDate() - 1);
+      const timeParts = time.split(":");
+      let hours = parseInt(timeParts[0], 10);
+      const minutes = parseInt(timeParts[1], 10);
+      if (ampm.toUpperCase() === "PM" && hours !== 12) hours += 12;
+      if (ampm.toUpperCase() === "AM" && hours === 12) hours = 0;
+      d.setHours(hours, minutes, 0, 0);
+      if (!isNaN(d.getTime())) return d;
+    }
+
+    // "Today 3:45 PM"
+    const todayMatch = text.match(
+      /\bToday\s+(\d{1,2}:\d{2})\s*(AM|PM)\b/i
+    );
+    if (todayMatch) {
+      const [, time, ampm] = todayMatch;
+      const d = new Date();
+      const timeParts = time.split(":");
+      let hours = parseInt(timeParts[0], 10);
+      const minutes = parseInt(timeParts[1], 10);
+      if (ampm.toUpperCase() === "PM" && hours !== 12) hours += 12;
+      if (ampm.toUpperCase() === "AM" && hours === 12) hours = 0;
+      d.setHours(hours, minutes, 0, 0);
+      if (!isNaN(d.getTime())) return d;
+    }
+
+    return null;
+  }
+
+  function detectDatesInRawText(
+    rawTextInput: string,
+    messages: ParsedMessage[]
+  ): ParsedMessage[] {
+    const lines = rawTextInput.split("\n");
+    let currentDetectedDate: Date | null = null;
+    let messageIdx = 0;
+    const result: ParsedMessage[] = messages.map((m) => ({ ...m }));
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+
+      // Check for date in this line
+      const dateInLine = detectDateInText(trimmed);
+      if (dateInLine) {
+        currentDetectedDate = dateInLine;
+      }
+
+      // Check if this line corresponds to the current message
+      if (messageIdx < result.length) {
+        const msg = result[messageIdx];
+        // Match if the line contains the message content
+        if (trimmed.includes(msg.content) || msg.content.includes(trimmed)) {
+          if (currentDetectedDate) {
+            msg.detectedDate = currentDetectedDate;
+          }
+          messageIdx++;
+        }
+      }
+    }
+
+    // If only some messages got dates, try to assign the detected date
+    // to messages that appear after a date header (common in chat logs)
+    // by carrying forward the last known date
+    let lastDate: Date | null = null;
+    for (const msg of result) {
+      if (msg.detectedDate) {
+        lastDate = msg.detectedDate;
+      } else if (lastDate) {
+        // Add a minute offset for messages under the same date header
+        lastDate = new Date(lastDate.getTime() + 60000);
+        msg.detectedDate = lastDate;
+      }
+    }
+
+    return result;
+  }
 
   function parseLabeled(text: string): ParsedMessage[] {
     const lines = text.split("\n").filter((l) => l.trim());
@@ -189,23 +391,37 @@ export default function BulkImportForm({
       return;
     }
 
-    // Calculate timestamps: spread messages across the date range
-    const end = endDate ? new Date(endDate + "T23:59:00") : new Date();
+    // Detect dates from the raw text and attach to messages
+    const messagesWithDates = detectDatesInRawText(rawText, messages);
+
+    // Calculate timestamps: use detected dates where available,
+    // interpolate between start/end for the rest
+    const end = endDate ? new Date(endDate) : new Date();
     const start = startDate
-      ? new Date(startDate + "T00:00:00")
-      : new Date(end.getTime() - messages.length * 60000);
+      ? new Date(startDate)
+      : new Date(end.getTime() - 7 * 24 * 60 * 60 * 1000);
     const totalSpan = end.getTime() - start.getTime();
     const interval =
-      messages.length > 1 ? totalSpan / (messages.length - 1) : 0;
+      messagesWithDates.length > 1
+        ? totalSpan / (messagesWithDates.length - 1)
+        : 0;
 
-    const inserts = messages.map((msg, idx) => ({
-      user_id: user.id,
-      contact_id: target,
-      direction: msg.direction,
-      content: msg.content,
-      platform: platform || null,
-      logged_at: new Date(start.getTime() + idx * interval).toISOString(),
-    }));
+    const inserts = messagesWithDates.map((msg, idx) => {
+      let timestamp: Date;
+      if (msg.detectedDate) {
+        timestamp = msg.detectedDate;
+      } else {
+        timestamp = new Date(start.getTime() + idx * interval);
+      }
+      return {
+        user_id: user.id,
+        contact_id: target,
+        direction: msg.direction,
+        content: msg.content,
+        platform: platform || null,
+        logged_at: timestamp.toISOString(),
+      };
+    });
 
     const { error } = await supabase.from("interactions").insert(inserts);
 
@@ -310,33 +526,39 @@ export default function BulkImportForm({
       />
 
       {/* Date Range */}
-      <div className="flex gap-2">
-        <div className="flex-1">
-          <label className="block text-xs text-rm-muted mb-1">
-            First message date
-          </label>
-          <input
-            type="date"
-            value={startDate}
-            onChange={(e) => setStartDate(e.target.value)}
-            className="w-full bg-rm-bg border border-rm-border rounded-lg px-3 py-2.5 text-rm-text text-sm min-h-[44px]"
-          />
+      <div className="bg-rm-bg border border-rm-border rounded-lg p-3">
+        <div className="text-xs text-rm-muted font-medium mb-2">
+          Date Range
         </div>
-        <div className="flex-1">
-          <label className="block text-xs text-rm-muted mb-1">
-            Last message date
-          </label>
-          <input
-            type="date"
-            value={endDate}
-            onChange={(e) => setEndDate(e.target.value)}
-            className="w-full bg-rm-bg border border-rm-border rounded-lg px-3 py-2.5 text-rm-text text-sm min-h-[44px]"
-          />
+        <div className="flex gap-2">
+          <div className="flex-1">
+            <label className="block text-[11px] text-rm-muted mb-1">
+              Start
+            </label>
+            <input
+              type="datetime-local"
+              value={startDate}
+              onChange={(e) => setStartDate(e.target.value)}
+              className="w-full bg-rm-card border border-rm-border rounded-lg px-3 py-2.5 text-rm-text text-sm min-h-[44px]"
+            />
+          </div>
+          <div className="flex-1">
+            <label className="block text-[11px] text-rm-muted mb-1">
+              End
+            </label>
+            <input
+              type="datetime-local"
+              value={endDate}
+              onChange={(e) => setEndDate(e.target.value)}
+              className="w-full bg-rm-card border border-rm-border rounded-lg px-3 py-2.5 text-rm-text text-sm min-h-[44px]"
+            />
+          </div>
         </div>
+        <p className="text-rm-muted text-[11px] mt-2">
+          Dates found in the text are used automatically. Otherwise messages are
+          spread across this range.
+        </p>
       </div>
-      <p className="text-rm-muted text-[11px] -mt-2">
-        Messages will be spread evenly across this range. Leave blank for today.
-      </p>
 
       {/* Text area */}
       <textarea
