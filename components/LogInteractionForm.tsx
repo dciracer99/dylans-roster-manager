@@ -28,6 +28,7 @@ export default function LogInteractionForm({
     return now.toISOString().slice(0, 16);
   });
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
 
   useEffect(() => {
     if (!contactId) {
@@ -51,7 +52,7 @@ export default function LogInteractionForm({
     } = await supabase.auth.getUser();
     if (!user) return;
 
-    await supabase.from("interactions").insert({
+    const { error: insertError } = await supabase.from("interactions").insert({
       user_id: user.id,
       contact_id: selectedContact || contactId,
       direction,
@@ -62,6 +63,12 @@ export default function LogInteractionForm({
     });
 
     setLoading(false);
+
+    if (insertError) {
+      setError(insertError.message);
+      return;
+    }
+
     onComplete();
     window.location.reload();
   }
@@ -181,6 +188,12 @@ export default function LogInteractionForm({
           className="w-full bg-rm-bg border border-rm-border rounded-lg px-3 py-2.5 text-rm-text text-sm min-h-[44px]"
         />
       </div>
+
+      {error && (
+        <div className="text-red-400 text-sm bg-red-400/10 border border-red-400/20 rounded-lg p-3">
+          {error}
+        </div>
+      )}
 
       <button
         type="submit"
