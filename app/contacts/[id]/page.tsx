@@ -7,6 +7,10 @@ import {
   calculateCharismaScore,
   getDaysSinceLastInteraction,
   getLastDirection,
+  countGhosts,
+  countDates,
+  getResponseStats,
+  getMomentum,
   Interaction,
 } from "@/lib/scoring";
 import BottomNav from "@/components/BottomNav";
@@ -59,6 +63,11 @@ export default function ThreadView() {
     analysis: string;
   } | null>(null);
   const [showConsult, setShowConsult] = useState(false);
+  const [showAnalyze, setShowAnalyze] = useState(false);
+  const [analyzeResult, setAnalyzeResult] = useState("");
+  const [editingInteraction, setEditingInteraction] = useState<string | null>(null);
+  const [editDate, setEditDate] = useState("");
+  const [editContent, setEditContent] = useState("");
   const [consultQuestion, setConsultQuestion] = useState("");
   const [consultAnswer, setConsultAnswer] = useState("");
   const [aiLoading, setAiLoading] = useState(false);
@@ -286,6 +295,95 @@ export default function ThreadView() {
     setAiLoading(false);
   }
 
+  async function handleAnalyze() {
+    if (!contact) return;
+    setShowAnalyze(true);
+    setAiLoading(true);
+    setAnalyzeResult("");
+
+    const score = calculateCharismaScore(interactions);
+    const daysSince = getDaysSinceLastInteraction(interactions);
+    const lastDir = getLastDirection(interactions);
+    const ghosts = countGhosts(interactions);
+    const dates = countDates(interactions);
+    const momentum = getMomentum(interactions);
+    const responseStats = getResponseStats(interactions);
+    const sentCount = interactions.filter((i) => i.direction === "sent").length;
+    const receivedCount = interactions.filter(
+      (i) => i.direction === "received"
+    ).length;
+    const recent = interactions.slice(0, 20).map((i) => ({
+      direction: i.direction,
+      content: i.content,
+      type: i.interaction_type,
+    }));
+
+    try {
+      const res = await fetch("/api/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contactName: contact.name,
+          tier: contact.tier,
+          score,
+          daysSince,
+          lastDirection: lastDir,
+          totalSent: sentCount,
+          totalReceived: receivedCount,
+          ghostCount: ghosts,
+          dateCount: dates,
+          momentum,
+          yourAvgResponseHours: responseStats.yourAvgHours,
+          theirAvgResponseHours: responseStats.theirAvgHours,
+          rating: contact.rating,
+          notes: contact.notes,
+          recentInteractions: recent.map(
+            (r) =>
+              `${r.direction === "sent" ? "You" : "Them"}${r.type && r.type !== "text" ? ` [${r.type}]` : ""}: ${r.content}`
+          ),
+        }),
+      });
+      const data = await res.json();
+      setAnalyzeResult(data.analysis);
+    } catch {
+      setAnalyzeResult("Failed to analyze. Check your connection.");
+    }
+    setAiLoading(false);
+  }
+
+  async function handleEditInteraction(interactionId: string) {
+    if (!editDate && !editContent.trim()) {
+      setEditingInteraction(null);
+      return;
+    }
+
+    const updates: Record<string, string> = {};
+    if (editDate) updates.logged_at = new Date(editDate).toISOString();
+    if (editContent.trim()) updates.content = editContent.trim();
+
+    await supabase
+      .from("interactions")
+      .update(updates)
+      .eq("id", interactionId);
+
+    // Refresh
+    const { data } = await supabase
+      .from("interactions")
+      .select("*")
+      .eq("contact_id", contactId)
+      .order("logged_at", { ascending: false });
+    if (data) setInteractions(data as Interaction[]);
+
+    setEditingInteraction(null);
+    setEditDate("");
+    setEditContent("");
+  }
+
+  async function handleDeleteInteraction(interactionId: string) {
+    await supabase.from("interactions").delete().eq("id", interactionId);
+    setInteractions(interactions.filter((i) => i.id !== interactionId));
+  }
+
   function copyToClipboard() {
     navigator.clipboard.writeText(draft);
     setCopied(true);
@@ -309,6 +407,25 @@ export default function ThreadView() {
   const receivedCount = interactions.filter(
     (i) => i.direction === "received"
   ).length;
+  const ghosts = countGhosts(interactions);
+  const dates = countDates(interactions);
+  const momentum = getMomentum(interactions);
+  const responseStats = getResponseStats(interactions);
+
+  const momentumColor = {
+    rising: "text-green-400",
+    stable: "text-blue-400",
+    declining: "text-orange-400",
+    dead: "text-red-400",
+    new: "text-rm-muted",
+  };
+  const momentumLabel = {
+    rising: "📈 Rising",
+    stable: "➡️ Stable",
+    declining: "📉 Declining",
+    dead: "💀 Dead",
+    new: "🆕 New",
+  };
 
   const scoreColor =
     score >= 70
@@ -410,24 +527,71 @@ export default function ThreadView() {
             </div>
           </div>
 
-          <div className="flex gap-4 mb-3 text-xs">
-            <div>
-              <span className="text-rm-muted">You sent: </span>
-              <span className="text-blue-400 font-medium">{sentCount}</span>
+          {/* Stat Grid */}
+          <div className="grid grid-cols-3 gap-2 mb-3">
+            <div className="bg-rm-bg rounded-lg p-2 text-center">
+              <div className="text-rm-muted text-[10px] uppercase">Sent</div>
+              <div className="text-blue-400 font-bold text-sm">{sentCount}</div>
             </div>
-            <div>
-              <span className="text-rm-muted">They sent: </span>
-              <span className="text-rm-accent font-medium">
-                {receivedCount}
-              </span>
+            <div className="bg-rm-bg rounded-lg p-2 text-center">
+              <div className="text-rm-muted text-[10px] uppercase">Received</div>
+              <div className="text-rm-accent font-bold text-sm">{receivedCount}</div>
             </div>
-            <div>
-              <span className="text-rm-muted">Total: </span>
-              <span className="text-rm-text font-medium">
-                {interactions.length}
-              </span>
+            <div className="bg-rm-bg rounded-lg p-2 text-center">
+              <div className="text-rm-muted text-[10px] uppercase">Momentum</div>
+              <div className={`font-bold text-xs ${momentumColor[momentum]}`}>
+                {momentumLabel[momentum]}
+              </div>
+            </div>
+            <div className="bg-rm-bg rounded-lg p-2 text-center">
+              <div className="text-rm-muted text-[10px] uppercase">Ghosts</div>
+              <div className={`font-bold text-sm ${ghosts > 0 ? "text-red-400" : "text-green-400"}`}>
+                {ghosts}
+              </div>
+            </div>
+            <div className="bg-rm-bg rounded-lg p-2 text-center">
+              <div className="text-rm-muted text-[10px] uppercase">Dates</div>
+              <div className={`font-bold text-sm ${dates > 0 ? "text-green-400" : "text-rm-muted"}`}>
+                {dates}
+              </div>
+            </div>
+            <div className="bg-rm-bg rounded-lg p-2 text-center">
+              <div className="text-rm-muted text-[10px] uppercase">Resp Time</div>
+              <div className="text-rm-text font-bold text-xs">
+                {responseStats.avgResponseHours
+                  ? responseStats.avgResponseHours < 1
+                    ? `${Math.round(responseStats.avgResponseHours * 60)}m`
+                    : `${responseStats.avgResponseHours}h`
+                  : "—"}
+              </div>
             </div>
           </div>
+
+          {/* Response time detail */}
+          {(responseStats.yourAvgHours || responseStats.theirAvgHours) && (
+            <div className="flex gap-4 mb-3 text-[11px]">
+              {responseStats.yourAvgHours && (
+                <div>
+                  <span className="text-rm-muted">Your reply: </span>
+                  <span className="text-blue-400 font-medium">
+                    {responseStats.yourAvgHours < 1
+                      ? `${Math.round(responseStats.yourAvgHours * 60)}m`
+                      : `${responseStats.yourAvgHours}h`}
+                  </span>
+                </div>
+              )}
+              {responseStats.theirAvgHours && (
+                <div>
+                  <span className="text-rm-muted">Their reply: </span>
+                  <span className="text-rm-accent font-medium">
+                    {responseStats.theirAvgHours < 1
+                      ? `${Math.round(responseStats.theirAvgHours * 60)}m`
+                      : `${responseStats.theirAvgHours}h`}
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
 
           {contact.notes && (
             <p className="text-rm-muted text-sm mb-2">{contact.notes}</p>
@@ -471,6 +635,14 @@ export default function ThreadView() {
               Consult
             </button>
             <button
+              onClick={handleAnalyze}
+              className="flex-1 py-2.5 bg-rm-bg border border-rm-accent text-rm-accent rounded-lg text-sm font-medium min-h-[44px]"
+            >
+              Analyze
+            </button>
+          </div>
+          <div className="flex gap-2 mt-2">
+            <button
               onClick={() => setShowBulk(true)}
               className="flex-1 py-2 text-rm-muted text-xs font-medium min-h-[44px]"
             >
@@ -501,6 +673,7 @@ export default function ThreadView() {
               hour: "numeric",
               minute: "2-digit",
             });
+            const isEditing = editingInteraction === interaction.id;
 
             return (
               <div
@@ -520,15 +693,75 @@ export default function ThreadView() {
                         ? "→ You sent"
                         : "← They sent"}
                     </span>
+                    {interaction.interaction_type &&
+                      interaction.interaction_type !== "text" && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-rm-bg text-rm-muted border border-rm-border">
+                          {interaction.interaction_type}
+                        </span>
+                      )}
                     {interaction.platform && (
                       <span className="text-rm-muted text-xs">
                         · {interaction.platform}
                       </span>
                     )}
                   </div>
-                  <span className="text-rm-muted text-xs">{timeStr}</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-rm-muted text-xs">{timeStr}</span>
+                    <button
+                      onClick={() => {
+                        if (isEditing) {
+                          setEditingInteraction(null);
+                        } else {
+                          setEditingInteraction(interaction.id);
+                          const d = new Date(interaction.logged_at);
+                          d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+                          setEditDate(d.toISOString().slice(0, 16));
+                          setEditContent(interaction.content);
+                        }
+                      }}
+                      className="text-rm-muted text-[10px] min-w-[30px] min-h-[30px] flex items-center justify-center"
+                    >
+                      {isEditing ? "✕" : "✎"}
+                    </button>
+                  </div>
                 </div>
-                <p className="text-rm-text text-sm">{interaction.content}</p>
+
+                {isEditing ? (
+                  <div className="mt-2 space-y-2">
+                    <textarea
+                      value={editContent}
+                      onChange={(e) => setEditContent(e.target.value)}
+                      rows={2}
+                      className="w-full bg-rm-bg border border-rm-border rounded-lg px-3 py-2 text-rm-text text-sm resize-none"
+                    />
+                    <input
+                      type="datetime-local"
+                      value={editDate}
+                      onChange={(e) => setEditDate(e.target.value)}
+                      className="w-full bg-rm-bg border border-rm-border rounded-lg px-3 py-2 text-rm-text text-sm min-h-[40px]"
+                    />
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() =>
+                          handleEditInteraction(interaction.id)
+                        }
+                        className="flex-1 py-2 bg-rm-accent text-white rounded-lg text-xs font-medium min-h-[36px]"
+                      >
+                        Save
+                      </button>
+                      <button
+                        onClick={() =>
+                          handleDeleteInteraction(interaction.id)
+                        }
+                        className="py-2 px-4 text-red-400 border border-red-400/30 rounded-lg text-xs min-h-[36px]"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-rm-text text-sm">{interaction.content}</p>
+                )}
               </div>
             );
           })}
@@ -705,6 +938,24 @@ export default function ThreadView() {
             </button>
           </div>
         )}
+      </BottomSheet>
+
+      {/* Full Analyze Sheet */}
+      <BottomSheet open={showAnalyze} onClose={() => setShowAnalyze(false)}>
+        <h3 className="text-lg font-semibold text-rm-text mb-3">
+          Full Analysis — {contact?.name}
+        </h3>
+        {aiLoading ? (
+          <div className="text-rm-muted text-sm py-4">
+            Running full analysis...
+          </div>
+        ) : analyzeResult ? (
+          <div className="bg-rm-bg border border-rm-border rounded-lg p-4 max-h-80 overflow-y-auto">
+            <pre className="text-rm-text text-sm leading-relaxed whitespace-pre-wrap font-sans">
+              {analyzeResult}
+            </pre>
+          </div>
+        ) : null}
       </BottomSheet>
 
       <BottomNav />

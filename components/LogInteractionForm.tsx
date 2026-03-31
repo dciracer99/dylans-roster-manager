@@ -21,6 +21,7 @@ export default function LogInteractionForm({
   const [direction, setDirection] = useState<"sent" | "received">("sent");
   const [content, setContent] = useState("");
   const [platform, setPlatform] = useState("");
+  const [interactionType, setInteractionType] = useState("text");
   const [loggedAt, setLoggedAt] = useState(() => {
     const now = new Date();
     now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
@@ -56,6 +57,7 @@ export default function LogInteractionForm({
       direction,
       content: content.trim(),
       platform: platform.trim() || null,
+      interaction_type: interactionType || "text",
       logged_at: new Date(loggedAt).toISOString(),
     });
 
@@ -121,6 +123,33 @@ export default function LogInteractionForm({
           className="w-full bg-rm-bg border border-rm-border rounded-lg px-3 py-2.5 text-rm-text text-sm resize-none"
           placeholder="e.g. Asked about weekend plans"
         />
+      </div>
+
+      <div>
+        <label className="block text-sm text-rm-muted mb-1">Type</label>
+        <div className="flex flex-wrap gap-2">
+          {[
+            { value: "text", label: "Text" },
+            { value: "call", label: "Call" },
+            { value: "date", label: "Date" },
+            { value: "hangout", label: "Hangout" },
+            { value: "meetup", label: "Meetup" },
+            { value: "snap", label: "Snap" },
+          ].map((t) => (
+            <button
+              key={t.value}
+              type="button"
+              onClick={() => setInteractionType(t.value)}
+              className={`px-3 py-1.5 rounded-full text-xs font-medium min-h-[36px] ${
+                interactionType === t.value
+                  ? "bg-rm-accent text-white"
+                  : "bg-rm-bg border border-rm-border text-rm-muted"
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       <div>
